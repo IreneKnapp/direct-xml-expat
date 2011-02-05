@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GADTs, ForeignFunctionInterface #-}
 module Text.XML.Expat.SAX (
                            module Data.XML.Types,
                            Parser,
@@ -25,12 +25,50 @@ import qualified Data.ByteString.UTF8 as UTF8
 import Data.Char
 import Data.IORef
 import Data.XML.Types
+import Foreign
+import Foreign.C
+import Foreign.C.String
+
+
+newtype XML_Parser = XML_Parser (Ptr ())
+
+type StartElementHandler = Ptr () -> CString -> Ptr CString -> IO ()
+
+
+foreign import ccall "XML_ParserCreate"
+  xml_ParserCreate :: CString -> IO XML_Parser
+
+foreign import ccall "XML_ParserFree"
+  xml_ParserFree :: XML_Parser -> IO ()
+
+foreign import ccall "XML_Parse"
+  xml_Parse :: XML_Parser -> CString -> CInt -> CInt -> IO CInt
+
+foreign import ccall "XML_SetStartElementHandler"
+  xml_SetStartElementHandler
+    :: XML_Parser -> FunPtr StartElementHandler -> IO ()
+
+foreign import ccall "wrapper"
+  mkStartElementHandler
+    :: StartElementHandler -> IO (FunPtr StartElementHandler)
+
+foreign import ccall "XML_GetErrorCode"
+  xml_GetErrorCode :: XML_Parser -> IO CInt
+
+foreign import ccall "XML_ErrorString"
+  xml_ErrorString :: CInt -> IO CString
+
+foreign import ccall "XML_GetCurrentLineNumber"
+  xml_GetCurrentLineNumber :: XML_Parser -> IO CULong
+
+foreign import ccall "XML_GetCurrentColumnNumber"
+  xml_GetCurrentColumnNumber :: XML_Parser -> IO CULong
 
 
 data Parser = Parser {
+    parserForeignParser :: XML_Parser,
     parserErrorHandler :: String -> IO (),
-    parserFilename :: Maybe String,
-    parserInputBuffer :: IORef ByteString,
+    parserHasBegunDocument :: IORef Bool,
     parserBeginDocumentCallback
       :: IORef (Maybe (IO Bool)),
     parserEndDocumentCallback
@@ -62,10 +100,10 @@ data Callback a where
 
 
 newParser :: (String -> IO ())
-          -> Maybe String
           -> IO Parser
-newParser errorHandler maybeFilename = do
-  inputBufferIORef <- newIORef BS.empty
+newParser errorHandler = do
+  foreignParser <- withCString "UTF-8" (\encoding -> xml_ParserCreate encoding)
+  hasBegunDocumentIORef <- newIORef False
   beginDocumentCallbackIORef <- newIORef Nothing
   endDocumentCallbackIORef <- newIORef Nothing
   beginElementCallbackIORef <- newIORef Nothing
@@ -74,19 +112,26 @@ newParser errorHandler maybeFilename = do
   commentCallbackIORef <- newIORef Nothing
   instructionCallbackIORef <- newIORef Nothing
   doctypeCallbackIORef <- newIORef Nothing
-  return Parser {
-             parserErrorHandler = errorHandler,
-             parserFilename = maybeFilename,
-             parserInputBuffer = inputBufferIORef,
-             parserBeginDocumentCallback = beginDocumentCallbackIORef,
-             parserEndDocumentCallback = endDocumentCallbackIORef,
-             parserBeginElementCallback = beginElementCallbackIORef,
-             parserEndElementCallback = endElementCallbackIORef,
-             parserCharactersCallback = charactersCallbackIORef,
-             parserCommentCallback = commentCallbackIORef,
-             parserInstructionCallback = instructionCallbackIORef,
-             parserDoctypeCallback = doctypeCallbackIORef
-           }
+  
+  parser
+    <- return Parser {
+         parserForeignParser = foreignParser,
+         parserErrorHandler = errorHandler,
+         parserHasBegunDocument = hasBegunDocumentIORef,
+         parserBeginDocumentCallback = beginDocumentCallbackIORef,
+         parserEndDocumentCallback = endDocumentCallbackIORef,
+         parserBeginElementCallback = beginElementCallbackIORef,
+         parserEndElementCallback = endElementCallbackIORef,
+         parserCharactersCallback = charactersCallbackIORef,
+         parserCommentCallback = commentCallbackIORef,
+         parserInstructionCallback = instructionCallbackIORef,
+         parserDoctypeCallback = doctypeCallbackIORef
+       }
+  
+  startElementHandler <- mkStartElementHandler $ handleStartElement parser
+  xml_SetStartElementHandler foreignParser startElementHandler
+  
+  return parser
 
 
 setCallback :: Parser -> Callback a -> a -> IO ()
@@ -163,46 +208,69 @@ parsedDoctype :: Callback (Doctype -> IO Bool)
 parsedDoctype = CallbackDoctype
 
 
-isNameStartChar :: Char -> Bool
-isNameStartChar c =
-  let codepoint = ord c
-      inRange (a, b) = a <= codepoint && codepoint <= b
-  in isLetter c || c == '_' || any inRange nameStartCharRanges
-
-
-isNameChar :: Char -> Bool
-isNameChar c =
-  let codepoint = ord c
-      inRange (a, b) = a <= codepoint && codepoint <= b
-  in isLetter c
-     || isDigit c
-     || c == '-'
-     || c == '.'
-     || c == (chr 0xB7)
-     || any inRange nameCharRanges
-
-
-nameStartCharRanges :: [(Int, Int)]
-nameStartCharRanges =
-  [(0xC0, 0xD6), (0xD8, 0xF6), (0xF8, 0x2FF), (0x370, 0x37D), (0x37F, 0x1FFF),
-   (0x200C, 0x200D), (0x2070, 0x218F), (0x2C00, 0x2FEF), (0x3001, 0xD7FF),
-   (0xF900, 0xFDCF), (0xFDF0, 0xFFFD), (0x10000, 0xEFFFF)]
-
-
-nameCharRanges :: [(Int, Int)]
-nameCharRanges =
-  nameStartCharRanges
-  ++ [(0x0300, 0x036F), (0x203F, 0x2040)]
+handleStartElement :: Parser -> Ptr () -> CString -> Ptr CString -> IO ()
+handleStartElement parser _ elementName attributeArray = do
+  putStrLn $ "Got start element, huzzah."
 
 
 parseBytes :: Parser -> ByteString -> IO ()
 parseBytes parser newBytes = do
-  undefined
+  hasBegunDocument <- readIORef $ parserHasBegunDocument parser
+  keepGoing
+    <- if not hasBegunDocument
+         then do
+           maybeBeginDocumentCallback
+             <- readIORef $ parserBeginDocumentCallback parser
+           case maybeBeginDocumentCallback of
+             Nothing -> return True
+             Just beginDocumentCallback -> beginDocumentCallback
+         else return True
+  if keepGoing
+    then do
+      let bufferLength = BS.length newBytes
+      statusInt <- allocaBytes bufferLength
+                               (\buffer -> do
+                                  let loop i = do
+                                        if i == bufferLength
+                                          then return ()
+                                          else do
+                                            let byte = BS.index newBytes i
+                                            pokeElemOff buffer i byte
+                                            loop $ i + 1
+                                  loop 0
+                                  xml_Parse (parserForeignParser parser)
+                                            (castPtr buffer)
+                                            (fromIntegral bufferLength)
+                                            0)
+      handleStatusInt parser statusInt
+    else return ()
 
 
 parseComplete :: Parser -> IO ()
 parseComplete parser = do
-  preexistingBytes <- readIORef $ parserInputBuffer parser
-  if not $ BS.null preexistingBytes
-    then parserErrorHandler parser $ "Trailing garbage at end of XML."
+  statusInt <- alloca (\emptyData -> xml_Parse (parserForeignParser parser)
+                                               emptyData
+                                               0
+                                               1)
+  handleStatusInt parser statusInt
+  maybeEndDocumentCallback
+    <- readIORef $ parserEndDocumentCallback parser
+  keepGoing <- case maybeEndDocumentCallback of
+                 Nothing -> return True
+                 Just endDocumentCallback -> endDocumentCallback
+  if keepGoing
+    then xml_ParserFree (parserForeignParser parser)
     else return ()
+
+
+handleStatusInt :: Parser -> CInt -> IO ()
+handleStatusInt parser 0 = do
+  lineNumber <- xml_GetCurrentLineNumber (parserForeignParser parser)
+  columnNumber <- xml_GetCurrentColumnNumber (parserForeignParser parser)
+  errorString <- xml_GetErrorCode (parserForeignParser parser)
+                 >>= xml_ErrorString
+                  >>= peekCString
+  parserErrorHandler parser $ "XML parse error on line " ++ (show lineNumber) ++
+                              ", column " ++ (show columnNumber) ++
+                              ": " ++ errorString
+handleStatusInt parser 1 = return ()
