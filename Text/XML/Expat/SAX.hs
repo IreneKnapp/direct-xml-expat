@@ -24,6 +24,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.UTF8 as UTF8
 import Data.Char
 import Data.IORef
+import qualified Data.Text.Lazy as TL
 import Data.XML.Types
 import Foreign
 import Foreign.C
@@ -43,6 +44,9 @@ foreign import ccall "XML_ParserFree"
 
 foreign import ccall "XML_Parse"
   xml_Parse :: XML_Parser -> CString -> CInt -> CInt -> IO CInt
+
+foreign import ccall "XML_StopParser"
+  xml_StopParser :: XML_Parser -> CInt -> IO CInt
 
 foreign import ccall "XML_SetStartElementHandler"
   xml_SetStartElementHandler
@@ -209,8 +213,44 @@ parsedDoctype = CallbackDoctype
 
 
 handleStartElement :: Parser -> Ptr () -> CString -> Ptr CString -> IO ()
-handleStartElement parser _ elementName attributeArray = do
-  putStrLn $ "Got start element, huzzah."
+handleStartElement parser _ elementNameCString attributeCStringArray = do
+  maybeBeginElementCallback <- readIORef $ parserBeginElementCallback parser
+  case maybeBeginElementCallback of
+    Nothing -> return ()
+    Just beginElementCallback -> do
+      elementName <- handleName elementNameCString
+      let loop attributes i = do
+            attributeNameCString <- peekElemOff attributeCStringArray i
+            if attributeNameCString == nullPtr
+              then return attributes
+              else do
+                attributeName <- handleName attributeNameCString
+                attributeValueCString
+                  <- peekElemOff attributeCStringArray $ i + 1
+                attributeValue <- peekCString attributeValueCString
+                let attribute = Attribute {
+                                   attributeName = attributeName,
+                                   attributeContent
+                                     = [ContentText $ TL.pack attributeValue]
+                                 }
+                loop (attributes ++ [attribute]) (i + 2)
+      attributes <- loop [] 0
+      keepGoing <- beginElementCallback elementName attributes
+      if keepGoing
+        then return ()
+        else do
+          _ <- xml_StopParser (parserForeignParser parser) 0
+          return ()
+
+
+handleName :: CString -> IO Name
+handleName cString = do
+  string <- peekCString cString
+  return Name {
+             nameLocalName = TL.pack string,
+             nameNamespace = Nothing,
+             namePrefix = Nothing
+           }
 
 
 parseBytes :: Parser -> ByteString -> IO ()
