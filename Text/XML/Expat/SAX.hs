@@ -35,6 +35,8 @@ newtype XML_Parser = XML_Parser (Ptr ())
 
 type StartElementHandler = Ptr () -> CString -> Ptr CString -> IO ()
 
+type EndElementHandler = Ptr () -> CString -> IO ()
+
 
 foreign import ccall "XML_ParserCreate"
   xml_ParserCreate :: CString -> IO XML_Parser
@@ -52,9 +54,9 @@ foreign import ccall "XML_SetStartElementHandler"
   xml_SetStartElementHandler
     :: XML_Parser -> FunPtr StartElementHandler -> IO ()
 
-foreign import ccall "wrapper"
-  mkStartElementHandler
-    :: StartElementHandler -> IO (FunPtr StartElementHandler)
+foreign import ccall "XML_SetEndElementHandler"
+  xml_SetEndElementHandler
+    :: XML_Parser -> FunPtr EndElementHandler -> IO ()
 
 foreign import ccall "XML_GetErrorCode"
   xml_GetErrorCode :: XML_Parser -> IO CInt
@@ -67,6 +69,14 @@ foreign import ccall "XML_GetCurrentLineNumber"
 
 foreign import ccall "XML_GetCurrentColumnNumber"
   xml_GetCurrentColumnNumber :: XML_Parser -> IO CULong
+
+foreign import ccall "wrapper"
+  mkStartElementHandler
+    :: StartElementHandler -> IO (FunPtr StartElementHandler)
+
+foreign import ccall "wrapper"
+  mkEndElementHandler
+    :: EndElementHandler -> IO (FunPtr EndElementHandler)
 
 
 data Parser = Parser {
@@ -134,6 +144,8 @@ newParser errorHandler = do
   
   startElementHandler <- mkStartElementHandler $ handleStartElement parser
   xml_SetStartElementHandler foreignParser startElementHandler
+  endElementHandler <- mkEndElementHandler $ handleEndElement parser
+  xml_SetEndElementHandler foreignParser endElementHandler
   
   return parser
 
@@ -236,6 +248,21 @@ handleStartElement parser _ elementNameCString attributeCStringArray = do
                 loop (attributes ++ [attribute]) (i + 2)
       attributes <- loop [] 0
       keepGoing <- beginElementCallback elementName attributes
+      if keepGoing
+        then return ()
+        else do
+          _ <- xml_StopParser (parserForeignParser parser) 0
+          return ()
+
+
+handleEndElement :: Parser -> Ptr () -> CString -> IO ()
+handleEndElement parser _ elementNameCString = do
+  maybeEndElementCallback <- readIORef $ parserEndElementCallback parser
+  case maybeEndElementCallback of
+    Nothing -> return ()
+    Just endElementCallback -> do
+      elementName <- handleName elementNameCString
+      keepGoing <- endElementCallback elementName
       if keepGoing
         then return ()
         else do
