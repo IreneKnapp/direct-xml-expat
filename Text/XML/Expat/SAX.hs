@@ -1,22 +1,22 @@
 {-# LANGUAGE GADTs #-}
-module Text.XML.Direct.SAX (
-                            module Data.XML.Types,
-                            Parser,
-                            newParser,
-                            Callback,
-                            setCallback,
-                            clearCallback,
-                            parsedBeginDocument,
-                            parsedEndDocument,
-                            parsedBeginElement,
-                            parsedEndElement,
-                            parsedCharacters,
-                            parsedComment,
-                            parsedInstruction,
-                            parsedDoctype,
-                            parseBytes,
-                            parseComplete
-                           )
+module Text.XML.Expat.SAX (
+                           module Data.XML.Types,
+                           Parser,
+                           newParser,
+                           Callback,
+                           setCallback,
+                           clearCallback,
+                           parsedBeginDocument,
+                           parsedEndDocument,
+                           parsedBeginElement,
+                           parsedEndElement,
+                           parsedCharacters,
+                           parsedComment,
+                           parsedInstruction,
+                           parsedDoctype,
+                           parseBytes,
+                           parseComplete
+                          )
   where
 
 import Data.ByteString (ByteString)
@@ -197,55 +197,7 @@ nameCharRanges =
 
 parseBytes :: Parser -> ByteString -> IO ()
 parseBytes parser newBytes = do
-  let loop :: ByteString -> IO ()
-      loop bytes = do
-        case UTF8.uncons bytes of
-          Nothing -> return ()
-          Just (c, bytes') -> do
-            (keepGoing, bytes'')
-              <- case c of
-                   '<' -> handleThing bytes'
-                   _ -> handleText bytes
-            if keepGoing
-              then loop bytes''
-              else writeIORef (parserInputBuffer parser) bytes''
-      
-      handleText :: ByteString -> IO (Bool, ByteString)
-      handleText bytes = do
-        let (text, _) = UTF8.foldl (\(result, done) c ->
-                                      if done
-                                         then (result, True)
-                                         else if c == '<'
-                                                then (result, True)
-                                                else (result ++ [c], False))
-                                   ("", False)
-                                   bytes
-            bytes' = UTF8.drop (length text) bytes
-            callbackIORef = parserCharactersCallback parser
-        maybeCallback <- readIORef callbackIORef
-        keepGoing <- case maybeCallback of
-                       Nothing -> return True
-                       Just callback -> callback text
-        return (keepGoing, bytes')
-      
-      handleThing :: ByteString -> IO (Bool, ByteString)
-      handleThing bytes = do
-        let (thing, _) = UTF8.foldl (\(result, done) c ->
-                                       if done
-                                          then (result, True)
-                                          else if c == '>'
-                                                 then (result ++ [c], True)
-                                                 else (result ++ [c], False))
-                                    ("", False)
-                                    bytes
-            complete = last thing == '>'
-            bytes' = if complete
-                       then UTF8.drop (length thing) bytes
-                       else bytes
-        return (complete, bytes')
-  
-  preexistingBytes <- readIORef $ parserInputBuffer parser
-  loop $ BS.concat [preexistingBytes, newBytes]
+  undefined
 
 
 parseComplete :: Parser -> IO ()

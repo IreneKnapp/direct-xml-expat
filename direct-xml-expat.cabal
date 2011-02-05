@@ -1,4 +1,4 @@
-name: direct-xml-sax
+name: direct-xml-expat
 version: 1.0
 cabal-version: >= 1.2
 build-type: Simple
@@ -10,13 +10,13 @@ maintainer: dankna@gmail.com
 homepage: http://www.dankna.com/software/
 bug-reports: http://www.dankna.com/issues/create/
 category: Database
-synopsis: Native Haskell implementation of a SAX-like API for parsing XML.
+synopsis: Bindings to Expat for a SAX-like API for parsing XML.
 description:
-  This package is a native Haskell implementation of a SAX-like API for parsing XML.
-  It has minimal external dependencies, unlike other libraries.
+  This package is a SAX-like API for parsing XML.  It depends on the C library
+  Expat for the actual parsing.
  
 Library
-  exposed-modules: Text.XML.Direct.SAX
+  exposed-modules: Text.XML.Expat.SAX
   build-depends: base >= 4.1 && < 5,
                  bytestring >= 0.9.1.10 && < 1,
                  utf8-string >= 0.3.5,
