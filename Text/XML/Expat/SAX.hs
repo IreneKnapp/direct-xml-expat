@@ -24,7 +24,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.UTF8 as UTF8
 import Data.Char
 import Data.IORef
-import qualified Data.Text.Lazy as TL
+import qualified Data.Text as T
 import Data.XML.Types
 import Foreign
 import Foreign.C
@@ -88,7 +88,7 @@ data Parser = Parser {
     parserEndDocumentCallback
       :: IORef (Maybe (IO Bool)),
     parserBeginElementCallback
-      :: IORef (Maybe (Name -> [Attribute] -> IO Bool)),
+      :: IORef (Maybe (Name -> [(Name, [Content])] -> IO Bool)),
     parserEndElementCallback
       :: IORef (Maybe (Name -> IO Bool)),
     parserCharactersCallback
@@ -105,7 +105,7 @@ data Parser = Parser {
 data Callback a where
   CallbackBeginDocument :: Callback (IO Bool)
   CallbackEndDocument :: Callback (IO Bool)
-  CallbackBeginElement :: Callback (Name -> [Attribute] -> IO Bool)
+  CallbackBeginElement :: Callback (Name -> [(Name, [Content])] -> IO Bool)
   CallbackEndElement :: Callback (Name -> IO Bool)
   CallbackCharacters :: Callback (String -> IO Bool)
   CallbackComment :: Callback (String -> IO Bool)
@@ -200,7 +200,7 @@ parsedEndDocument :: Callback (IO Bool)
 parsedEndDocument = CallbackEndDocument
 
 
-parsedBeginElement :: Callback (Name -> [Attribute] -> IO Bool)
+parsedBeginElement :: Callback (Name -> [(Name, [Content])] -> IO Bool)
 parsedBeginElement = CallbackBeginElement
 
 
@@ -240,11 +240,8 @@ handleStartElement parser _ elementNameCString attributeCStringArray = do
                 attributeValueCString
                   <- peekElemOff attributeCStringArray $ i + 1
                 attributeValue <- peekCString attributeValueCString
-                let attribute = Attribute {
-                                   attributeName = attributeName,
-                                   attributeContent
-                                     = [ContentText $ TL.pack attributeValue]
-                                 }
+                let attribute = (attributeName,
+                                 [ContentText $ T.pack attributeValue])
                 loop (attributes ++ [attribute]) (i + 2)
       attributes <- loop [] 0
       keepGoing <- beginElementCallback elementName attributes
@@ -274,7 +271,7 @@ handleName :: CString -> IO Name
 handleName cString = do
   string <- peekCString cString
   return Name {
-             nameLocalName = TL.pack string,
+             nameLocalName = T.pack string,
              nameNamespace = Nothing,
              namePrefix = Nothing
            }
