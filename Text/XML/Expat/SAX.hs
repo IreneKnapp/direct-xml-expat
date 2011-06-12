@@ -37,6 +37,8 @@ type StartElementHandler = Ptr () -> CString -> Ptr CString -> IO ()
 
 type EndElementHandler = Ptr () -> CString -> IO ()
 
+type CharactersHandler = Ptr () -> CString -> CInt -> IO ()
+
 
 foreign import ccall "XML_ParserCreate"
   xml_ParserCreate :: CString -> IO XML_Parser
@@ -58,6 +60,10 @@ foreign import ccall "XML_SetEndElementHandler"
   xml_SetEndElementHandler
     :: XML_Parser -> FunPtr EndElementHandler -> IO ()
 
+foreign import ccall "XML_SetCharacterDataHandler"
+  xml_SetCharacterDataHandler
+    :: XML_Parser -> FunPtr CharactersHandler -> IO ()
+
 foreign import ccall "XML_GetErrorCode"
   xml_GetErrorCode :: XML_Parser -> IO CInt
 
@@ -77,6 +83,10 @@ foreign import ccall "wrapper"
 foreign import ccall "wrapper"
   mkEndElementHandler
     :: EndElementHandler -> IO (FunPtr EndElementHandler)
+
+foreign import ccall "wrapper"
+  mkCharactersHandler
+    :: CharactersHandler -> IO (FunPtr CharactersHandler)
 
 
 data Parser = Parser {
@@ -146,6 +156,8 @@ newParser errorHandler = do
   xml_SetStartElementHandler foreignParser startElementHandler
   endElementHandler <- mkEndElementHandler $ handleEndElement parser
   xml_SetEndElementHandler foreignParser endElementHandler
+  charactersHandler <- mkCharactersHandler $ handleCharacters parser
+  xml_SetCharacterDataHandler foreignParser charactersHandler
   
   return parser
 
@@ -260,6 +272,22 @@ handleEndElement parser _ elementNameCString = do
     Just endElementCallback -> do
       elementName <- handleName elementNameCString
       keepGoing <- endElementCallback elementName
+      if keepGoing
+        then return ()
+        else do
+          _ <- xml_StopParser (parserForeignParser parser) 0
+          return ()
+
+
+handleCharacters :: Parser -> Ptr () -> CString -> CInt -> IO ()
+handleCharacters parser _ charactersCString charactersLength = do
+  maybeCharactersCallback <- readIORef $ parserCharactersCallback parser
+  case maybeCharactersCallback of
+    Nothing -> return ()
+    Just charactersCallback -> do
+      characters <- peekCStringLen (charactersCString,
+                                    fromIntegral charactersLength)
+      keepGoing <- charactersCallback characters
       if keepGoing
         then return ()
         else do
